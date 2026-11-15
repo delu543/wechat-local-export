@@ -119,7 +119,7 @@ class PackageStaticTests(unittest.TestCase):
         client = _load_module("portable_client_commands", CLIENT_PATH)
         self.assertEqual(
             client.ALLOWED_COMMANDS,
-            {"doctor", "scan", "export", "direct-voice-mp4"},
+            {"doctor", "scan", "export", "direct-voice-mp4", "daily-digest"},
         )
         parser = client.build_parser()
         with contextlib.redirect_stderr(io.StringIO()):

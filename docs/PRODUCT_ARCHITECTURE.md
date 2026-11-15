@@ -95,7 +95,23 @@ Relative dates and voice dictation are interpreted by Codex, then converted to
 absolute local timestamps before `scan`. The helper does not require microphone,
 Screen Recording or Accessibility permission.
 
-Daily filtering and summary automation uses this same online scan path and does
+Multi-chat daily digests (`daily-digest`, added in 0.3.0) refresh once for the
+whole account (contact plus every initialized message shard) and then read many
+chats from that one frozen vault with per-chat `(create_time, sort_seq)` cursors
+kept in an owner-only state file. They write one private JSON digest and never
+export media. When official WeChat is not running, the digest may fall back to the
+last account this command bound and that account's last verified vault, always
+marked `stale` with `data_as_of`.
+
+Every successful online refresh now prunes older `run-*` directories of the same
+account after the profile switch, keeping the newest `WECHAT_LOCAL_EXPORT_KEEP_RUNS`
+(default 1) and never the active run; retention failures never fail a refresh.
+Scan plans additionally carry `sender_username`, `sender_display_name` and
+`sender_is_self`, resolved through each shard's `Name2Id` table and the contact
+table, so 1:1 chats and the owner's own group messages are no longer shown as
+numeric ids.
+
+Single-chat filtering and summary automation uses this same online scan path and does
 not convert or export media unless the user's request asks for it. The public
 scan report exposes only the safe `snapshot_mode: online` state, never clone
 paths, database names, account references, keys or WAL internals.

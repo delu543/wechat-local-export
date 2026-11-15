@@ -149,7 +149,29 @@ def build_parser() -> argparse.ArgumentParser:
     direct_voice = subparsers.add_parser("direct-voice-mp4")
     direct_voice.add_argument("--request", required=True, type=_absolute_path)
     direct_voice.add_argument("--output-dir", required=True, type=_absolute_path)
+    digest = subparsers.add_parser("daily-digest")
+    digest.add_argument("--since", type=_local_time_text)
+    digest.add_argument("--init-cursors-at", type=_local_time_text)
+    digest.add_argument("--chats-file", type=_absolute_path)
+    digest.add_argument("--mention-name", action="append", default=[], type=_short_text)
+    digest.add_argument("--max-messages", type=_positive_count, default=200)
+    digest.add_argument("--dry-run", action="store_true")
+    digest.add_argument("--no-refresh", action="store_true")
     return parser
+
+
+def _local_time_text(value: str) -> str:
+    if not re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?: [0-9]{2}:[0-9]{2}(?::[0-9]{2})?)?", value.strip()
+    ):
+        raise argparse.ArgumentTypeError("时间格式需要 YYYY-MM-DD[ HH:MM[:SS]]")
+    return value.strip()
+
+
+def _short_text(value: str) -> str:
+    if not value.strip() or len(value) > 64 or any(ord(c) < 32 for c in value):
+        raise argparse.ArgumentTypeError("名称需要 1 到 64 个可见字符")
+    return value.strip()
 
 
 def _candidate_roots() -> list[Path]:
@@ -197,6 +219,9 @@ def _load_backend(project_root: Path) -> SimpleNamespace:
             _resolve_vault,
             _write_json_private,
         )
+        from content_vault import digest as digest_module
+        from content_vault.identity import owner_username_from_account_root
+        refresh_all = None
         if sys.platform == "win32":
             from live_tools.windows.router import bind_active_account
             from live_tools.windows.state import load_account_profile
@@ -204,7 +229,10 @@ def _load_backend(project_root: Path) -> SimpleNamespace:
         else:
             from content_vault.profile import load_account_profile
             from live_tools.wechat_account_router import bind_active_account
-            from live_tools.wechat_online_refresh import refresh_online_snapshot
+            from live_tools.wechat_online_refresh import (
+                refresh_online_snapshot,
+                refresh_online_snapshot_all_messages as refresh_all,
+            )
     except Exception as exc:
         raise DevelopmentBackendError("无法加载统一内容导出后端") from exc
     return SimpleNamespace(
@@ -220,6 +248,9 @@ def _load_backend(project_root: Path) -> SimpleNamespace:
         resolve_vault=_resolve_vault,
         ensure_output=_ensure_output_outside_vault,
         write_json=_write_json_private,
+        refresh_all=refresh_all,
+        digest=digest_module,
+        owner_from_root=owner_username_from_account_root,
     )
 
 
@@ -697,7 +728,7 @@ def _find_swift_binary(project_root: Path) -> Path:
 def run_doctor(args: argparse.Namespace, project_root: Path, backend: SimpleNamespace) -> int:
     base: dict[str, Any] = {
         "backend": "development-source",
-        "backend_version": "0.2.0-dev.9",
+        "backend_version": "0.3.0-dev.1",
         "signed_companion": False,
         "notarized_companion": False,
         "product_ready": False,
@@ -926,6 +957,12 @@ def run_scan(
             raise DevelopmentBackendError("扫描计划输出已经存在，拒绝覆盖")
 
     plan_started_ns = time.perf_counter_ns()
+    owner_kwargs: dict[str, Any] = {}
+    owner_from_root = getattr(backend, "owner_from_root", None)
+    if profile is not None and owner_from_root is not None:
+        owner = owner_from_root(profile.get("account_root"))
+        if owner:
+            owner_kwargs["owner_username"] = owner
     plan = backend.build_content_plan(
         vault,
         request["chat"],
@@ -934,6 +971,7 @@ def run_scan(
         expected=None,
         chat_id=request["chat_id"],
         kinds=None if request["types"] == ["all"] else request["types"],
+        **owner_kwargs,
     )
     plan_build_ms = _elapsed_milliseconds(plan_started_ns)
     if binding is not None:
@@ -1260,6 +1298,175 @@ def run_direct_voice_mp4(
     return return_code
 
 
+def _support_root() -> Path:
+    return Path.home().joinpath(*PRIVATE_TASKS_RELATIVE[:-1])
+
+
+class _RememberedBinding:
+    """Stand-in binding for a stale digest when WeChat is not running."""
+
+    def __init__(self, account_ref: str) -> None:
+        self.account_ref = account_ref
+
+
+def run_daily_digest(
+    args: argparse.Namespace,
+    backend: SimpleNamespace,
+    *,
+    support_root: Path | None = None,
+    report_sink: Callable[[Mapping[str, Any]], None] = _json_output,
+    now: Callable[[], float] = time.time,
+) -> int:
+    """One refresh, many chats: write a private multi-chat digest JSON."""
+
+    digest = backend.digest
+    started_ns = time.perf_counter_ns()
+    root = support_root or _support_root()
+    store = digest.CursorStore(root / "state" / "digest-state.json")
+    session = "current-official-session"
+    stale = False
+    refresh: dict[str, Any] = {"status": "not-run"}
+    binding: Any = None
+    try:
+        binding = _bind_current_account_or_stop(backend)
+        profile = _profile_or_stop(backend, binding)
+    except CurrentAccountRoutingError as exc:
+        remembered = store.last_account_ref
+        if not remembered or not ACCOUNT_REF_PATTERN.fullmatch(remembered):
+            raise
+        binding = None
+        profile = _profile_or_stop(backend, _RememberedBinding(remembered))
+        session = "last-known-account"
+        stale = True
+        refresh = {"status": "skipped-no-current-session", "reason": str(exc)}
+    account_ref = profile["account_ref"]
+    binding_ms = _elapsed_milliseconds(started_ns)
+
+    refresh_started_ns = time.perf_counter_ns()
+    if binding is not None and not args.init_cursors_at:
+        if args.no_refresh:
+            refresh = {"status": "skipped-by-option"}
+            stale = True
+        elif backend.refresh_all is None:
+            refresh = {"status": "unsupported-on-platform"}
+            stale = True
+        else:
+            try:
+                report = backend.refresh_all(binding, profile)
+                if not isinstance(report, Mapping) or report.get("profile_updated") is not True:
+                    raise DevelopmentBackendError("在线快照刷新未完成")
+                refresh = {"status": "ok", "retention": dict(report.get("retention") or {})}
+                profile = _profile_or_stop(backend, binding)
+            except Exception as exc:  # fall back to the last verified vault
+                refresh = {"status": "failed", "error": _public_error_text(exc)}
+                stale = True
+    refresh_ms = _elapsed_milliseconds(refresh_started_ns)
+
+    build_started_ns = time.perf_counter_ns()
+    vault = backend.resolve_vault(profile["vault_dir"])
+    data_as_of, data_source = digest.vault_data_as_of(vault)
+    contacts = digest.load_contacts(vault)
+    owner = digest.owner_for(profile.get("account_root"), contacts)
+    if args.chats_file:
+        chat_ids, selection_errors = digest.select_chats(
+            contacts, mode="list", requested=digest.load_chat_list(Path(args.chats_file))
+        )
+        mode = "list"
+    else:
+        chat_ids, selection_errors = digest.select_chats(contacts, mode="pinned")
+        mode = "pinned"
+
+    if args.init_cursors_at:
+        at_unix = digest.parse_since(args.init_cursors_at)
+        store.update(account_ref, digest.initial_cursors(chat_ids, at_unix))
+        store.save()
+        report_sink(
+            {
+                "status": "cursors-initialized",
+                "chat_count": len(chat_ids),
+                "cursor_time": args.init_cursors_at,
+                "selection_mode": mode,
+            }
+        )
+        return 0
+
+    since_unix = digest.parse_since(args.since)
+    chats, advanced = digest.build_digest(
+        vault,
+        chat_ids=chat_ids,
+        contacts=contacts,
+        owner_username=owner,
+        cursors=store.cursors(account_ref),
+        since_unix=since_unix,
+        data_as_of_unix=data_as_of,
+        mention_names=args.mention_name,
+        max_text_messages=args.max_messages,
+    )
+    generated = now()
+    from datetime import datetime as _datetime
+
+    stamp = _datetime.fromtimestamp(generated).strftime("%Y-%m-%d_%H%M%S")
+    owner_contact = contacts.get(owner or "") or {}
+    document = {
+        "schema_version": digest.DIGEST_SCHEMA_VERSION,
+        "generated_at": _datetime.fromtimestamp(generated).astimezone().isoformat(timespec="seconds"),
+        "data_as_of": _datetime.fromtimestamp(data_as_of).astimezone().isoformat(timespec="seconds"),
+        "data_as_of_source": data_source,
+        "stale": stale,
+        "session": session,
+        "refresh": refresh,
+        "owner": {
+            "detected": bool(owner),
+            "display_name": owner_contact.get("nick_name") or owner_contact.get("display_name"),
+        },
+        "selection": {"mode": mode, "chat_count": len(chat_ids), "errors": selection_errors},
+        "dry_run": bool(args.dry_run),
+        "cursors_advanced": not args.dry_run,
+        "chats": chats,
+    }
+    daily_dir = root / "daily"
+    digest.write_private_json(daily_dir / f"{stamp}.json", document)
+    if not args.dry_run:
+        store.update(account_ref, advanced)
+        store.save()
+    pruned = digest.prune_digests(daily_dir, now=generated)
+    build_ms = _elapsed_milliseconds(build_started_ns)
+    report_sink(
+        {
+            "status": "digest-complete",
+            "digest_file": f"daily/{stamp}.json",
+            "data_as_of": document["data_as_of"],
+            "stale": stale,
+            "session": session,
+            "refresh": refresh,
+            "dry_run": bool(args.dry_run),
+            "selection_mode": mode,
+            "selection_errors": selection_errors,
+            "digests_pruned": pruned,
+            "chats": [
+                {
+                    "display_name": item["display_name"],
+                    "kind": item["kind"],
+                    "status": item["status"],
+                    "message_count": item.get("message_count", 0),
+                    "text_count": item.get("text_count", 0),
+                    "mention_count": item.get("mention_count", 0),
+                    "owner_message_count": item.get("owner_message_count", 0),
+                    **({"error": item["error"]} if "error" in item else {}),
+                }
+                for item in chats
+            ],
+            "stage_timing_ms": {
+                "binding": binding_ms,
+                "online_snapshot": refresh_ms,
+                "digest_build": build_ms,
+                "total": _elapsed_milliseconds(started_ns),
+            },
+        }
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -1273,6 +1480,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_export(args, project_root, backend)
         if args.command == "direct-voice-mp4":
             return run_direct_voice_mp4(args, project_root, backend)
+        if args.command == "daily-digest":
+            return run_daily_digest(args, backend)
         raise DevelopmentBackendError("命令不受支持")
     except (DevelopmentBackendError, OSError, ValueError) as exc:
         print(f"安全停止：{_public_error_text(exc)}", file=sys.stderr)
@@ -1282,6 +1491,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "VaultError",
             "ImageCryptoError",
             "OnlineRefreshError",
+            "DigestError",
         }:
             print(f"安全停止：{_public_error_text(exc)}", file=sys.stderr)
             return 2

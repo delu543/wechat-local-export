@@ -32,6 +32,7 @@ from direct_vault.direct_voice_vault import (
     _validated_chat_and_time_range,
 )
 
+from content_vault.identity import load_contacts, load_name2id, resolve_sender
 from content_vault.message_parser import parse_message
 
 
@@ -273,6 +274,7 @@ def build_content_plan(
     expected: Optional[int] = None,
     chat_id: Optional[str] = None,
     kinds: Optional[Iterable[str]] = None,
+    owner_username: Optional[str] = None,
 ) -> dict[str, Any]:
     vault = _resolve_vault(vault_dir)
     start_unix = _parse_time(start)
@@ -297,6 +299,10 @@ def build_content_plan(
     internal_id, display_name, chat_kind = _resolve_chat(vault, chat_name, chat_id)
     table_name = "Msg_" + hashlib.md5(internal_id.encode("utf-8")).hexdigest()
 
+    try:
+        contacts = load_contacts(vault)
+    except (VaultError, sqlite3.Error):
+        contacts = {}
     rows: list[dict[str, Any]] = []
     matched_databases: list[Path] = []
     message_databases = _message_databases(vault)
@@ -306,6 +312,10 @@ def build_content_plan(
             if not table:
                 continue
             matched_databases.append(database)
+            try:
+                name2id = load_name2id(connection)
+            except (VaultError, sqlite3.Error):
+                name2id = {}
             columns = _message_columns(connection, table)
             aliases: list[str] = []
             for alias, column in columns.items():
@@ -367,6 +377,10 @@ def build_content_plan(
                     payload["resource_md5_candidates"] = list(
                         dict.fromkeys(candidates)
                     )
+                sender_id = parsed.get("sender_id") or real_sender
+                sender_username, sender_display, sender_is_self = resolve_sender(
+                    sender_id, name2id, contacts, owner_username
+                )
                 stable_id = {
                     "source_db": source_ref["source_db"],
                     "source_table": table,
@@ -386,7 +400,10 @@ def build_content_plan(
                         "raw_local_type": str(raw_type),
                         "base_type": raw_type & 0xFFFFFFFF,
                         "type_flags_hi32": raw_type >> 32,
-                        "sender_id": parsed.get("sender_id") or real_sender,
+                        "sender_id": sender_id,
+                        "sender_username": sender_username,
+                        "sender_display_name": sender_display,
+                        "sender_is_self": sender_is_self,
                         "kind": str(parsed.get("kind") or "unknown"),
                         "payload": payload,
                         "parse": parse_meta,

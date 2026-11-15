@@ -24,7 +24,7 @@ from typing import Iterable, Sequence
 HELPER_ENVIRONMENT = "WECHAT_LOCAL_EXPORT_HELPER"
 UNVERIFIED_HELPER_OPT_IN = "WECHAT_LOCAL_EXPORT_ALLOW_UNVERIFIED_HELPER"
 ALLOWED_COMMANDS = frozenset(
-    {"doctor", "scan", "export", "direct-voice-mp4"}
+    {"doctor", "scan", "export", "direct-voice-mp4", "daily-digest"}
 )
 DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -99,7 +99,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     direct_voice.add_argument("--request", required=True, type=_absolute_path)
     direct_voice.add_argument("--output-dir", required=True, type=_absolute_path)
+
+    digest = subparsers.add_parser(
+        "daily-digest",
+        help="一次在线刷新后，按游标读取置顶（或清单）聊天，写入私有日报 JSON",
+    )
+    digest.add_argument("--since", type=_local_time_text)
+    digest.add_argument("--init-cursors-at", type=_local_time_text)
+    digest.add_argument("--chats-file", type=_absolute_path)
+    digest.add_argument("--mention-name", action="append", default=[], type=_short_text)
+    digest.add_argument("--max-messages", type=_positive_count)
+    digest.add_argument("--dry-run", action="store_true")
+    digest.add_argument("--no-refresh", action="store_true")
     return parser
+
+
+def _local_time_text(value: str) -> str:
+    if not re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?: [0-9]{2}:[0-9]{2}(?::[0-9]{2})?)?", value.strip()
+    ):
+        raise argparse.ArgumentTypeError("时间格式需要 YYYY-MM-DD[ HH:MM[:SS]]")
+    return value.strip()
+
+
+def _short_text(value: str) -> str:
+    if not value.strip() or len(value) > 64 or any(ord(c) < 32 for c in value):
+        raise argparse.ArgumentTypeError("名称需要 1 到 64 个可见字符")
+    return value.strip()
 
 
 def _is_executable_file(path: Path) -> bool:
@@ -263,6 +289,22 @@ def backend_arguments(args: argparse.Namespace) -> list[str]:
                 args.output_dir,
             ]
         )
+    elif args.command == "daily-digest":
+        for option, value in (
+            ("--since", args.since),
+            ("--init-cursors-at", args.init_cursors_at),
+            ("--chats-file", args.chats_file),
+        ):
+            if value:
+                result.extend([option, value])
+        for name in args.mention_name:
+            result.extend(["--mention-name", name])
+        if args.max_messages:
+            result.extend(["--max-messages", str(args.max_messages)])
+        if args.dry_run:
+            result.append("--dry-run")
+        if args.no_refresh:
+            result.append("--no-refresh")
     return result
 
 

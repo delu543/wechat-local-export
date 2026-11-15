@@ -90,6 +90,7 @@ def _validate_client_scope() -> None:
     for fragment in (
         "ALLOWED_COMMANDS = frozenset(",
         "\"direct-voice-mp4\"",
+        "\"daily-digest\"",
         "os.execv(",
     ):
         if fragment not in source:
@@ -190,6 +191,7 @@ def validate() -> dict[str, Any]:
             "scan",
             "export",
             "direct-voice-mp4",
+            "daily-digest",
         ],
         "signed_companion_included": False,
     }

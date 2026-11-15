@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT=${0:A:h:h}
-PACKAGE_VERSION=${1:-0.2.0-dev.9}
+PACKAGE_VERSION=${1:-0.3.0-dev.1}
 MANIFEST_VERSION=$(/usr/bin/python3 -c \
   'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' \
   "$PROJECT_ROOT/portable_skill/.codex-plugin/plugin.json")

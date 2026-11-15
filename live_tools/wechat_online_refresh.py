@@ -21,6 +21,7 @@ from content_vault.profile import write_account_profile
 from direct_vault.direct_voice_vault import _resolve_vault
 from live_tools.wechat_key_init import resolve_account_ref
 from live_tools.wechat_safe_snapshot import snapshot_and_decrypt
+from live_tools.snapshot_retention import prune_account_runs
 
 
 DEFAULT_SNAPSHOT_ROOT = (
@@ -120,6 +121,25 @@ def snapshot_database_requests(
     return requested
 
 
+def all_message_database_requests(vault_dir: str | Path) -> list[str]:
+    """Return contact plus every initialized ``message_N`` shard in the vault.
+
+    Used by multi-chat digests: one coordinated clone covers every chat, so N
+    chats cost one online refresh instead of N.
+    """
+
+    vault = _resolve_vault(vault_dir)
+    contact = vault / "contact" / "contact.db"
+    if contact.is_symlink() or not contact.is_file():
+        raise OnlineRefreshError("已验证快照缺少 contact 数据库")
+    shards = _regular_files(vault / "message", MESSAGE_NAME)
+    if not shards:
+        raise OnlineRefreshError("已验证快照没有 message 分片")
+    return ["contact"] + [
+        f"message_{int(MESSAGE_NAME.fullmatch(path.name).group(1))}" for path in shards
+    ]
+
+
 def refresh_online_snapshot(
     binding: Any,
     profile: Mapping[str, Any],
@@ -131,9 +151,75 @@ def refresh_online_snapshot(
     snapshotter: Callable[..., dict[str, Any]] = snapshot_and_decrypt,
     doctor_fn: Callable[..., dict[str, Any]] = doctor,
     profile_writer: Callable[[str, Mapping[str, Any]], Any] = write_account_profile,
+    pruner: Callable[..., Mapping[str, Any]] | None = prune_account_runs,
 ) -> dict[str, Any]:
     """Refresh, validate, and atomically point the current account at a new vault."""
 
+    vault_dir = profile.get("vault_dir")
+    if not isinstance(vault_dir, str):
+        raise OnlineRefreshError("当前账号 profile 路径不完整")
+    databases = snapshot_database_requests(
+        vault_dir,
+        kinds=kinds,
+        chat_id=chat_id,
+    )
+    return _refresh_databases(
+        binding,
+        profile,
+        databases=databases,
+        kinds=kinds,
+        output_root=output_root,
+        resolver=resolver,
+        snapshotter=snapshotter,
+        doctor_fn=doctor_fn,
+        profile_writer=profile_writer,
+        pruner=pruner,
+    )
+
+
+def refresh_online_snapshot_all_messages(
+    binding: Any,
+    profile: Mapping[str, Any],
+    *,
+    output_root: str | Path = DEFAULT_SNAPSHOT_ROOT,
+    resolver: Callable[[str], Path] = resolve_account_ref,
+    snapshotter: Callable[..., dict[str, Any]] = snapshot_and_decrypt,
+    doctor_fn: Callable[..., dict[str, Any]] = doctor,
+    profile_writer: Callable[[str, Mapping[str, Any]], Any] = write_account_profile,
+    pruner: Callable[..., Mapping[str, Any]] | None = prune_account_runs,
+) -> dict[str, Any]:
+    """One coordinated refresh of contact + every message shard (text digests)."""
+
+    vault_dir = profile.get("vault_dir")
+    if not isinstance(vault_dir, str):
+        raise OnlineRefreshError("当前账号 profile 路径不完整")
+    return _refresh_databases(
+        binding,
+        profile,
+        databases=all_message_database_requests(vault_dir),
+        kinds=["text"],
+        output_root=output_root,
+        resolver=resolver,
+        snapshotter=snapshotter,
+        doctor_fn=doctor_fn,
+        profile_writer=profile_writer,
+        pruner=pruner,
+    )
+
+
+def _refresh_databases(
+    binding: Any,
+    profile: Mapping[str, Any],
+    *,
+    databases: list[str],
+    kinds: Sequence[str],
+    output_root: str | Path,
+    resolver: Callable[[str], Path],
+    snapshotter: Callable[..., dict[str, Any]],
+    doctor_fn: Callable[..., dict[str, Any]],
+    profile_writer: Callable[[str, Mapping[str, Any]], Any],
+    pruner: Callable[..., Mapping[str, Any]] | None,
+) -> dict[str, Any]:
     account_ref = getattr(binding, "account_ref", None)
     if (
         not isinstance(account_ref, str)
@@ -147,11 +233,6 @@ def refresh_online_snapshot(
     if not isinstance(vault_dir, str) or not isinstance(account_root, str):
         raise OnlineRefreshError("当前账号 profile 路径不完整")
 
-    databases = snapshot_database_requests(
-        vault_dir,
-        kinds=kinds,
-        chat_id=chat_id,
-    )
     db_base = resolver(account_ref)
     report = snapshotter(
         db_base=db_base,
@@ -193,6 +274,12 @@ def refresh_online_snapshot(
         "swift_bin": swift_bin,
     }
     profile_writer(account_ref, new_profile)
+    retention: Mapping[str, Any] = {"status": "disabled", "removed": 0}
+    if pruner is not None:
+        try:
+            retention = pruner(new_profile["vault_dir"])
+        except Exception:  # retention must never fail a verified refresh
+            retention = {"status": "failed", "removed": 0}
     return {
         "status": "online-refresh-complete",
         "database_count": len(databases),
@@ -201,4 +288,5 @@ def refresh_online_snapshot(
         "ready_for_scan": True,
         "ready_for_voice_mp4": bool(readiness.get("ready_for_voice_mp4")),
         "page_hmac_verified": False,
+        "retention": dict(retention),
     }

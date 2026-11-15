@@ -29,7 +29,7 @@ PYTHONPYCACHEPREFIX="$TEMP_ROOT/pycache" \
 PYTHONPYCACHEPREFIX="$TEMP_ROOT/pycache" \
   "$RUNTIME_PYTHON" -m unittest discover -s live_tools/tests -p 'test_*.py'
 PYTHONPYCACHEPREFIX="$TEMP_ROOT/pycache" \
-  "$RUNTIME_PYTHON" -m unittest portable_skill.tests.test_package
+  "$RUNTIME_PYTHON" -m unittest portable_skill.tests.test_package portable_skill.tests.test_daily_digest
 PYTHONPYCACHEPREFIX="$TEMP_ROOT/pycache" \
   "$RUNTIME_PYTHON" -m unittest discover -s live_tools/windows/tests -p 'test_*.py'
 "$PROJECT_ROOT/scripts/tests/test_codex_bootstrap.sh"

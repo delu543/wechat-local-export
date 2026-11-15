@@ -22,9 +22,9 @@ Codex 用户级 Skill 位置与显式调用约定参照
 
 当前交付有两个 ZIP：
 
-- `wechat-local-export-source-kit-0.2.0-dev.9.zip`：当前可运行的完整源码套件，包含
+- `wechat-local-export-source-kit-0.3.0-dev.1.zip`：当前可运行的完整源码套件，包含
   Plugin、统一导出后端、初始化/快照工具、Swift 工程、测试和文档；源码开发用户应选它。
-- `wechat-local-export-plugin-0.2.0-dev.9.zip`：只含对话层和薄客户端，供未来已安装签名
+- `wechat-local-export-plugin-0.3.0-dev.1.zip`：只含对话层和薄客户端，供未来已安装签名
   Companion 的电脑使用；它本身不能解密或导出聊天，也不会偷偷内置密钥工具。
 
 因此，在签名 Companion 发布前，不要让普通用户只安装 Plugin ZIP 后误以为已经具备完整

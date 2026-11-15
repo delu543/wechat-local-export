@@ -1295,7 +1295,7 @@ def _render_markdown(messages: list[dict[str, Any]], assets: list[dict[str, Any]
     by_id = {item["asset_id"]: item for item in assets}
     lines = [f"# {title}", "", "本归档由本地只读快照生成；视频正文未导出。", ""]
     for message in messages:
-        sender = html.escape(str(message.get("sender_id") or "未知发送者"))
+        sender = html.escape(str(message.get("sender_display_name") or message.get("sender_id") or "未知发送者"))
         lines.append(f"## {message['sequence']}. {message['time_iso8601']} · {sender}")
         lines.append("")
         lines.append(html.escape(_message_summary(message)))
@@ -1333,7 +1333,7 @@ def _render_html(messages: list[dict[str, Any]], assets: list[dict[str, Any]], t
                 body.append(f'<a href="{relative}">打开 {asset["kind"]}</a>')
             else:
                 body.append(f'<code>{html.escape(asset["kind"])}: {html.escape(asset["status"])}</code>')
-        sender = html.escape(str(message.get("sender_id") or "未知发送者"))
+        sender = html.escape(str(message.get("sender_display_name") or message.get("sender_id") or "未知发送者"))
         timestamp = html.escape(message["time_iso8601"])
         cards.append(f'<article><header>{message["sequence"]}. {timestamp} · {sender}</header>{"".join(body)}</article>')
     safe_title = html.escape(title)

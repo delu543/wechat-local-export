@@ -354,6 +354,36 @@ contains message-level private data.
 
 Return clickable local output links. Do not automatically open or ingest exported chat content into the conversation unless the user separately asks.
 
+## Daily digest (multi-chat, read-only)
+
+Use `daily-digest` when the user wants a recurring summary of many chats (by default every chat
+pinned to the top, i.e. contact `flag & 0x800`) rather than an export. It performs one current-account
+doctor binding, one coordinated online refresh of `contact` plus every initialized `message_N`
+shard, then reads every selected chat from that single frozen vault starting at a private per-chat
+cursor. It writes one owner-only JSON file and prints only a redacted summary:
+
+```text
+python3 <client> daily-digest [--since "YYYY-MM-DD HH:MM"] [--dry-run] [--no-refresh] \
+  [--chats-file <absolute-private-json>] [--mention-name <name>] [--max-messages N] \
+  [--init-cursors-at "YYYY-MM-DD HH:MM"]
+```
+
+- Output: `~/Library/Application Support/WeChatLocalExport/daily/<date>_<time>.json` (0600) with
+  per-chat counts, non-text counts by kind, top senders with resolved names, messages mentioning
+  the owner, the owner's own messages and a bounded list of recent text for summarization.
+  Digests older than 14 days are pruned automatically.
+- Cursors live in `state/digest-state.json` (0600). `--dry-run` never advances them; `--since`
+  overrides them for one run; `--init-cursors-at` only sets them and creates no digest.
+- `--chats-file` is a private JSON `{"chats": ["<chat_id or exact display name>", ...]}`; names are
+  matched exactly and ambiguous names are reported, never guessed.
+- If WeChat is closed, the digest uses only the last account that this command successfully bound,
+  reads its last verified vault and sets `stale: true` with `data_as_of`. A failed refresh also falls
+  back to the previous verified vault with `stale: true`. Always tell the user the `data_as_of` time
+  when `stale` is true.
+- Official accounts are stored outside `message_N` and are reported as per-chat errors.
+- Summarize from the private file locally; never upload its contents and never quote more message
+  text than the user needs. A digest is not an export and needs no digest confirmation.
+
 ## Failure behavior
 
 Fail closed and explain the next safe action when any of these occurs:

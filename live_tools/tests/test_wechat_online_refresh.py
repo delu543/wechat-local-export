@@ -8,7 +8,9 @@ import unittest
 
 from live_tools.wechat_online_refresh import (
     OnlineRefreshError,
+    all_message_database_requests,
     refresh_online_snapshot,
+    refresh_online_snapshot_all_messages,
     snapshot_database_requests,
 )
 
@@ -153,6 +155,88 @@ class OnlineRefreshTests(unittest.TestCase):
             )
         self.assertEqual(wrote, [])
 
+
+
+class AllMessageRefreshTests(unittest.TestCase):
+    setUp = OnlineRefreshTests.setUp
+    tearDown = OnlineRefreshTests.tearDown
+
+    def _profile(self) -> dict:
+        return {
+            "schema_version": 2,
+            "account_ref": Binding.account_ref,
+            "vault_dir": str(self.vault),
+            "account_root": str(self.root / "account"),
+            "swift_bin": None,
+        }
+
+    def _snapshotter(self, calls: dict, run: Path, count: int):
+        def snapshotter(**kwargs: object) -> dict:
+            calls["snapshot"] = kwargs
+            return {
+                "status": "complete",
+                "database_count": count,
+                "run_directory": str(run),
+                "safety": {"snapshot_mode": "online_sqlite_shm_coordinated_apfs_clone"},
+            }
+        return snapshotter
+
+    def test_all_message_requests_cover_every_shard(self) -> None:
+        self.assertEqual(
+            all_message_database_requests(self.vault),
+            ["contact", "message_0", "message_1"],
+        )
+
+    def test_one_refresh_then_prune_after_profile_switch(self) -> None:
+        run = self.root / "run"
+        (run / "decrypted").mkdir(parents=True)
+        calls: dict = {}
+        order: list = []
+
+        def profile_writer(account_ref: str, profile: object) -> None:
+            order.append("profile")
+
+        def pruner(vault: str) -> dict:
+            order.append("prune")
+            calls["pruned"] = vault
+            return {"status": "complete", "removed": 2}
+
+        report = refresh_online_snapshot_all_messages(
+            Binding(),
+            self._profile(),
+            output_root=self.root / "snapshots",
+            resolver=lambda account_ref: self.root / "db_storage",
+            snapshotter=self._snapshotter(calls, run, 3),
+            doctor_fn=lambda *a, **k: {"ready_for_scan": True},
+            profile_writer=profile_writer,
+            pruner=pruner,
+        )
+        self.assertEqual(calls["snapshot"]["databases"], ["contact", "message_0", "message_1"])
+        self.assertEqual(order, ["profile", "prune"])
+        self.assertEqual(calls["pruned"], str((run / "decrypted").resolve()))
+        self.assertEqual(report["retention"]["removed"], 2)
+
+    def test_retention_failure_does_not_fail_refresh(self) -> None:
+        run = self.root / "run"
+        (run / "decrypted").mkdir(parents=True)
+
+        def pruner(vault: str) -> dict:
+            raise OSError("disk")
+
+        report = refresh_online_snapshot(
+            Binding(),
+            self._profile(),
+            kinds=["text"],
+            chat_id=self.chat_id,
+            output_root=self.root / "snapshots",
+            resolver=lambda account_ref: self.root / "db_storage",
+            snapshotter=self._snapshotter({}, run, 2),
+            doctor_fn=lambda *a, **k: {"ready_for_scan": True},
+            profile_writer=lambda *a: None,
+            pruner=pruner,
+        )
+        self.assertTrue(report["profile_updated"])
+        self.assertEqual(report["retention"]["status"], "failed")
 
 if __name__ == "__main__":
     unittest.main()
