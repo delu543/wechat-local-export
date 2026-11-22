@@ -9,7 +9,7 @@
 
 ```text
 我用 Windows 10/11，请帮我在本机安装并使用这个项目：
-https://github.com/delu543/wechat-data-extraction
+https://github.com/delu543/wechat-local-export
 请取得完整源码，读取 AGENTS.md 和 docs/WINDOWS_FIRST_RUN.md，按 Windows 新手流程检查和安装。
 需要我本人登录微信或确认隐私操作时，一次明确告诉我下一步；其余能安全代办的步骤由你完成。
 如果本地已有这个项目，先检查，不要覆盖已有文件或改动其他项目。
